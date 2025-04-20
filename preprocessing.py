@@ -33,50 +33,51 @@ def handle_missing_values(df_clean, file_id):
     print(f"处理空缺值后剩余记录数: {len(df_clean)}\n")
     return df_clean, missing_info
 
-# #缺失值处理
-# def handle_missing_values(df_clean):
-#     missing = df_clean.isnull().sum()
-#     # 计算缺失值比例
-#     missing_ratio = missing / len(df_clean) * 100
-    
-#     # 创建一个 DataFrame 来存储缺失值信息
-#     missing_info = pd.DataFrame({
-#         '缺失值数量': missing,
-#         '缺失值比例 (%)': missing_ratio
-#     })
-    
-#     # 打印缺失值信息表格
-#     print("缺失值统计：")
-#     print(missing_info)
-    
-#     # 处理空缺值
-#     df_clean = df_clean.dropna()
-#     print(f"处理空缺值后剩余记录数: {len(df_clean)}\n")
-#     return df_clean
 def normalize_numeric_columns(df, columns):
     scaler = MinMaxScaler()
     df[columns] = scaler.fit_transform(df[columns])
     return df
 
-def extract_purchase_features(df):
-    """从 purchase_history 中提取 average_price 和 item_count"""
-    avg_prices = []
-    item_counts = []
+def extract_user_behavior_features(df):
+    """从 purchase_history 和 login_history 中提取结构化特征"""
+    purchase_avg_prices = []
+    purchase_item_counts = []
+    purchase_categories = []
 
-    for record in df['purchase_history']:
+    session_durations = []
+    login_counts = []
+
+    for i, row in df.iterrows():
+        # 处理 purchase_history
         try:
-            data = json.loads(record)
-            avg_prices.append(data.get('average_price', np.nan))
-            item_counts.append(len(data.get('items', [])))
+            purchase = json.loads(row['purchase_history'])
+            purchase_avg_prices.append(purchase.get('avg_price', np.nan))
+            purchase_item_counts.append(len(purchase.get('items', [])))
+            purchase_categories.append(purchase.get('categories', '未知'))
         except Exception:
-            avg_prices.append(np.nan)
-            item_counts.append(np.nan)
+            purchase_avg_prices.append(np.nan)
+            purchase_item_counts.append(np.nan)
+            purchase_categories.append('未知')
 
-    df['purchase_avg_price'] = avg_prices
-    df['purchase_item_count'] = item_counts
+        # 处理 login_history
+        try:
+            login = json.loads(row['login_history'])
+            session_durations.append(login.get('avg_session_duration', np.nan))
+            login_counts.append(login.get('login_count', np.nan))
+        except Exception:
+            session_durations.append(np.nan)
+            login_counts.append(np.nan)
+
+    df['purchase_avg_price'] = purchase_avg_prices
+    df['purchase_item_count'] = purchase_item_counts
+    df['purchase_category'] = purchase_categories
+    df['session_duration'] = session_durations
+    df['login_count'] = login_counts
+
     return df
 def is_valid_phone(phone):
-    return bool(re.match(r"\d{3}-\d{3}-\d{4}$", phone))
+    pattern = r"^\+\d{1,4}([\s\-]?\d+)+$"
+    return bool(re.match(pattern, phone.strip()))
 def is_valid_email(email):
     return bool(re.match(r"[^@]+@[^@]+\.[^@]+", email))
 
@@ -110,12 +111,9 @@ def draw_boxplot(df, col, file_id, info):
 
 
 # 文件夹路径
-info = '30G_data'
+info = '10G_data'
 folder_path = 'data/' + info
 
-# 新目录路径
-cleaned_folder = 'data/cleaned/' + info
-os.makedirs(cleaned_folder, exist_ok=True)  # 自动创建目录（如果不存在）
 
 # 获取所有 parquet 文件路径
 parquet_files = sorted(glob.glob(os.path.join(folder_path, 'part-*.parquet')))
@@ -124,6 +122,7 @@ all_high_value_users = []
 missing_summary_list = []
 outlier_summary_list = []
 
+# count = 0
 #记录开始时间并打印
 start_time = time.time()
 print("开始时间:", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
@@ -135,13 +134,16 @@ for file in parquet_files:
     try:
         # 读取 parquet 文件
         df_clean = pd.read_parquet(file, engine='pyarrow')
+
         print(df_clean.info())
+        # print(df_clean['phone_number'].value_counts())
+        # break
 
         df_clean, missing_info = handle_missing_values(df_clean, file_id)
         missing_summary_list.append(missing_info)
 
     # 处理数值异常值字段
-        for col in ['age', 'income', 'credit_score']:
+        for col in ['age', 'income']:
             print(f"\n处理字段：{col}")
             before = len(df_clean)
             df_clean = remove_outliers_iqr(df_clean, col)
@@ -199,8 +201,10 @@ for file in parquet_files:
             '异常值数量': t1 - t2,
             '异常值比例 (%)': (t1 - t2) / t1 * 100
             })
+
+
          # 提取购买信息
-        df_clean = extract_purchase_features(df_clean)
+        df_clean = extract_user_behavior_features(df_clean)
 
         #处理登记时间
         # 确保 registration_date 是 datetime 类型
@@ -212,32 +216,50 @@ for file in parquet_files:
 
 
         # 选择要归一化的字段
-        numeric_columns = ['registration_days', 'age', 'income', 'credit_score', 'purchase_avg_price', 'purchase_item_count']
+        numeric_columns = ['registration_days', 'age', 'income', 'purchase_avg_price', 'purchase_item_count', 'session_duration', 'login_count']
          # 归一化数值字段
         df_clean = normalize_numeric_columns(df_clean, numeric_columns)
         print(f"✅ 数据已归一化")
+        # 检查归一化前后的数值字段
+        print(df_clean[numeric_columns].describe())
+        print("是否存在 NaN：")
+        print(df_clean[numeric_columns].isna().sum())
+
+
 
         df_clean['is_active_num'] = df_clean['is_active'].astype(int)
 
         #计算综合得分
         df_clean['user_value_score'] = (
         0.25 * df_clean['income'] +
-        0.20 * df_clean['credit_score'] +
         0.20 * df_clean['purchase_avg_price'] +
         0.15 * df_clean['purchase_item_count'] +
         0.10 * df_clean['is_active_num'] +
-        0.10 * (1 - df_clean['registration_days'])  # 注册越早分数越高
+        0.10 * (1 - df_clean['registration_days']) + # 注册越早分数越高
+        0.10 * df_clean['session_duration'] +
+        0.10 * df_clean['login_count'] 
         )
+
+        # 检查计算后的综合得分
+        print(df_clean['user_value_score'].describe())
+        print(df_clean['user_value_score'].isna().sum())
 
         threshold = df_clean['user_value_score'].quantile(0.90)
         high_value_users = df_clean[df_clean['user_value_score'] >= threshold]
         print(f"🎯 高价值用户数量：{len(high_value_users)}")
 
+
+        # 查看最终的阈值
+        threshold = df_clean['user_value_score'].quantile(0.90)
+        print(f"🎯 综合得分90%分位阈值：{threshold}")
         # 加入列表
         all_high_value_users.append(high_value_users)
     except Exception as e:
         print(f"读取失败: {file}，错误：{e}")
 
+    # count += 1
+    # if count == 1:
+    #     break
 
 # 拼接所有高价值用户
 final_high_value_users = pd.concat(all_high_value_users, ignore_index=True)
